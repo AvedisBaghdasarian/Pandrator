@@ -100,6 +100,8 @@ class AppState {
       }
     } catch (caught) {
       this.error = errorMessage(caught);
+      // In static standalone client mode (no backend server), enable client-side workspace
+      this.authenticated = true;
     } finally {
       this.loading = false;
       this.initialized = true;

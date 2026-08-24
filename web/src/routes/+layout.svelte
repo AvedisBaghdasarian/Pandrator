@@ -50,6 +50,7 @@
   const navigation = [
     { href: '/', label: 'Home', icon: Home },
     { href: '/sessions', label: 'Sessions', icon: FolderClock },
+    { href: '/static', label: 'Static Studio (WebGPU)', icon: AudioLines },
     { href: '/sources', label: 'Source library', icon: Library },
     { href: '/voices', label: 'Voices', icon: Mic2 },
     { href: '/pronunciations', label: 'Pronunciations', icon: Languages },
