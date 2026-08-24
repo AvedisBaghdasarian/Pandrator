@@ -28,7 +28,8 @@ pip-wheel-metadata/
 !pandrator_manager_bootstrap.spec
 
 # Static target generated/runtime artifacts
-/static/public/models/
+/static/public/models/*
+!/static/public/models/.gitkeep
 /static/dist/
 /static/.cache/
 /static/playwright-report/
