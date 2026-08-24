@@ -1,23 +1,61 @@
 # Pandrator Static
 
-`static/` is a deliberately small, serverless audiobook conversion target.
+This is the serverless golden path for turning common documents into audiobooks in the browser. It is **not** a second server implementation: the static target ports the deterministic source-cleaning and text-segmentation behavior used by Pandrator and replaces the server/native boundaries with browser runtimes.
 
-Golden path:
+## Architecture
 
-1. Open `index.html` from any static host.
-2. Select an EPUB, PDF, TXT, HTML, or Markdown file.
-3. Extract text in the browser and split it into readable chunks.
-4. Load the Kokoro ONNX/WebGPU runtime and voice model from the configured static asset base.
-5. Synthesize chunks locally and export WAV. Where the browser supports WebCodecs, the encoder can add compressed audio without FFmpeg.
+```text
+EPUB/PDF/TXT/HTML
+       |
+       +-- EPUB: fflate + DOMParser, following Pandrator's spine/block model
+       +-- PDF: pdfjs-dist
+       |
+Pandrator deterministic cleanup port
+  - block roles
+  - TOC / footnote / boilerplate filtering
+  - chapter marking
+  - sentence/chunk segmentation
+       |
+KokoroTTS (kokoro-js)
+  - WebGPU when available
+  - WASM fallback
+       |
+MP3 (lamejs) / WAV
+```
 
-The page does not require the Pandrator Python server, a database, FFmpeg, or a worker queue. Source documents and generated audio remain in browser memory unless the user explicitly saves the result.
+The original Pandrator five-phase source-cleaning pipeline is intentionally **not** included in this target because those phases are LLM-agent operations. A serverless build cannot reproduce them without shipping an LLM and its model. The static golden path therefore uses Pandrator's deterministic preprocessing path, which is safe, repeatable, and local.
 
-## Runtime assets
+Kokoro is run locally in the browser. `kokoro-js` supports WebGPU and WASM execution; WebGPU is preferred when available. urlKokoro.js documentationhttps://www.npmjs.com/package/kokoro-js
 
-The application code is self-contained. Kokoro/ONNX model and voice assets are intentionally not committed; place them under `static/public/models/` during a release build or configure `window.PANDRATOR_STATIC_MODEL_BASE` before loading the app. This keeps multi-hundred-megabyte model artifacts out of Git.
+## Build
 
-The adapter is intentionally isolated in `app.js`: it accepts either a `window.KokoroWeb` implementation supplied by the chosen WebGPU runtime or a compatible runtime module loaded by the host. This gives the static target one integration seam while the repository can pin the exact Kokoro-WebGPU package later.
+```bash
+cd static
+npm install
+npm run build
+```
+
+The generated `static/dist/` directory is intentionally ignored by Git. Host that directory on any static web server.
+
+## Local development
+
+```bash
+cd static
+npm install
+npm run dev
+```
+
+## Model assets
+
+For a truly self-contained/offline deployment, mirror the Kokoro ONNX model and voice assets into `static/public/models/` and set `window.PANDRATOR_STATIC_MODEL` to that model directory before the app loads. Model binaries are deliberately ignored because they are large release artifacts.
+
+For a normal static deployment, `kokoro-js` can resolve the public ONNX model directly. The browser still performs inference locally; no Pandrator server is involved.
 
 ## Tests
 
-`node --test static/tests/*.test.mjs` exercises format detection, chunking, and WAV generation. Browser UI smoke tests are in `static/tests/static-ui.spec.mjs` and run with Playwright when the dependency is installed.
+```bash
+cd static
+npm test
+```
+
+The unit suite exercises the port of Pandrator's deterministic cleanup, sentence chunking, format detection, and WAV output. The UI smoke test remains useful where a supported Playwright browser is available.
