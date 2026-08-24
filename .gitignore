@@ -44,6 +44,7 @@ graphify-out/
 htmlcov/
 web/node_modules/
 web/.svelte-kit/
+pandrator/web/static/_app/
 
 # Runtime data
 Outputs/

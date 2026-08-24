@@ -4,6 +4,9 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
+  optimizeDeps: {
+    exclude: ['@huggingface/transformers', 'onnxruntime-web']
+  },
   server: {
     proxy: {
       '/api': 'http://127.0.0.1:8097'
