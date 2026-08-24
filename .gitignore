@@ -27,6 +27,14 @@ pip-wheel-metadata/
 *.spec
 !pandrator_manager_bootstrap.spec
 
+# Static target generated/runtime artifacts
+/static/public/models/*
+!/static/public/models/.gitkeep
+/static/dist/
+/static/.cache/
+/static/playwright-report/
+/static/test-results/
+
 # Test and tooling caches
 .pytest_cache/
 .mypy_cache/

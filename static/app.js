@@ -1,0 +1,27 @@
+import { unzipSync, strFromU8 } from 'fflate';
+import * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
+import { KokoroTTS } from 'kokoro-js';
+import { Mp3Encoder } from 'lamejs';
+import { cleanBlocks, chapterMarkers, extractHtmlBlocks, pcmToWavBlob, splitForTts, assembleText } from './src/core.js';
+
+export function detectFormat(file){const n=(file.name||'').toLowerCase();if(n.endsWith('.epub'))return'epub';if(n.endsWith('.pdf'))return'pdf';if(n.endsWith('.html')||n.endsWith('.htm'))return'html';if(n.endsWith('.md')||n.endsWith('.markdown'))return'markdown';return'text'}
+export function chunkText(text,max=900){return splitForTts(text,max)}
+export function wavBlob(samples,sampleRate=24000){return pcmToWavBlob(samples,sampleRate)}
+
+async function parseEpub(file){
+  const zip=unzipSync(new Uint8Array(await file.arrayBuffer()));
+  const names=Object.keys(zip); const container=new DOMParser().parseFromString(strFromU8(zip['META-INF/container.xml']),'application/xml');
+  const root=container.querySelector('rootfile'); if(!root)throw new Error('Invalid EPUB: missing container rootfile');
+  const opfPath=root.getAttribute('full-path'); const opf=new DOMParser().parseFromString(strFromU8(zip[opfPath]),'application/xml');
+  const dir=opfPath.includes('/')?opfPath.slice(0,opfPath.lastIndexOf('/')+1):''; const manifest=new Map();
+  for(const item of opf.querySelectorAll('manifest > item'))manifest.set(item.id,item);
+  const spine=[...opf.querySelectorAll('spine > itemref')].map(x=>manifest.get(x.getAttribute('idref'))).filter(Boolean); const blocks=[];
+  spine.forEach((item,i)=>{const href=decodeURIComponent(item.getAttribute('href')||'').split('#')[0];const path=`${dir}${href}`;const name=names.find(n=>n.toLowerCase()===path.toLowerCase());if(name)blocks.push(...extractHtmlBlocks(strFromU8(zip[name]),href,i,spine.length))});
+  const cleaned=chapterMarkers(cleanBlocks(blocks)); return{blocks:cleaned,text:assembleText(cleaned),title:opf.querySelector('title')?.textContent?.trim()||file.name.replace(/\.epub$/i,'')};
+}
+async function parsePdf(file){const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;const blocks=[];for(let page=1;page<=pdf.numPages;page++){const c=await(await pdf.getPage(page)).getTextContent();const text=c.items.map(x=>x.str||'').join(' ').replace(/\s+/g,' ').trim();if(text)blocks.push({block_id:`pdf:${page}`,text,line_start:page,line_end:page,source_index:page,href:`page:${page}`,tag:'page',classes:[],element_id:null,role_candidates:[],chapter:'no'})}return{blocks,text:assembleText(blocks),title:file.name.replace(/\.pdf$/i,'')};}
+async function parseSource(file){const type=detectFormat(file);if(type==='epub')return parseEpub(file);if(type==='pdf')return parsePdf(file);let text=await file.text();if(type==='html')text=new DOMParser().parseFromString(text,'text/html').body?.innerText||'';const safe=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');const blocks=chapterMarkers(cleanBlocks(extractHtmlBlocks(`<body><p>${safe}</p></body>`,file.name)));return{blocks,text:assembleText(blocks),title:file.name.replace(/\.[^.]+$/,'')};}
+async function createTts(status){const model=window.PANDRATOR_STATIC_MODEL||'onnx-community/Kokoro-82M-v1.0-ONNX';return KokoroTTS.from_pretrained(model,{dtype:navigator.gpu?'fp32':'q8',device:navigator.gpu?'webgpu':'wasm'});}
+async function synthesize(doc,voice,status){const chunks=splitForTts(doc.text);if(!chunks.length)throw new Error('No narrative text found after Pandrator cleanup.');const tts=await createTts(status);const samples=[];for(let i=0;i<chunks.length;i++){status.textContent=`Kokoro: ${i+1}/${chunks.length}`;const audio=await tts.generate(chunks[i],{voice,speed:1});const data=audio.audio||audio.data||audio;for(const value of data)samples.push(value)}return{samples:Float32Array.from(samples),sampleRate:24000,chunks};}
+function mp3Blob(samples,sampleRate,bitrate=96){const encoder=new Mp3Encoder(1,sampleRate,bitrate),pcm=new Int16Array(samples.length);for(let i=0;i<samples.length;i++)pcm[i]=Math.max(-1,Math.min(1,samples[i]))*32767;const chunks=[];for(let i=0;i<pcm.length;i+=1152){const part=encoder.encodeBuffer(pcm.subarray(i,i+1152));if(part.length)chunks.push(new Int8Array(part))}const end=encoder.flush();if(end.length)chunks.push(new Int8Array(end));return new Blob(chunks,{type:'audio/mpeg'});}
+if(typeof document!=='undefined'){const source=document.querySelector('#source'),convert=document.querySelector('#convert'),voice=document.querySelector('#voice'),format=document.querySelector('#format'),status=document.querySelector('#status'),download=document.querySelector('#download');source.addEventListener('change',()=>{convert.disabled=!source.files[0];status.textContent=source.files[0]?`Ready: ${source.files[0].name}`:'Choose a document.'});convert.addEventListener('click',async()=>{try{convert.disabled=true;download.hidden=true;status.textContent='Parsing with Pandrator static pipeline…';const doc=await parseSource(source.files[0]);status.textContent=`Cleaned ${doc.blocks.length} narrative blocks.`;const result=await synthesize(doc,voice.value.trim()||'af_heart',status);const blob=format.value==='mp3'?mp3Blob(result.samples,result.sampleRate):pcmToWavBlob(result.samples,result.sampleRate);download.href=URL.createObjectURL(blob);download.download=`${doc.title}.${format.value}`;download.hidden=false;status.textContent=`Done: ${result.chunks.length} TTS chunks.`}catch(e){status.textContent=e?.message||String(e);console.error(e)}finally{convert.disabled=!source.files[0]}})}
