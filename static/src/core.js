@@ -1,0 +1,129 @@
+// Browser port of the deterministic Pandrator audiobook path.
+// The structure/cleanup rules mirror pandrator/logic/source_cleaning and
+// pandrator/logic/sentence_segmenter.py, but operate on browser data types.
+
+const BLOCK_TAGS = new Set(['h1','h2','h3','h4','h5','h6','p','blockquote','li','figcaption','dt','dd','pre','aside']);
+const FRONT_NAMES = new Set(['cover','cvi','cvr','title','tp','copyright','cop','cpy','colophon','col','fm','halftitle']);
+const END_NAMES = new Set(['index','biblio','bibliography','bib','about','ads','adc','adv','advertisement','colophon','col','copyright','cop','copy','ata','bm']);
+
+export function normalizeText(text) {
+  return String(text ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export function sentenceSegments(text) {
+  const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
+  const out = [];
+  for (const paragraph of normalized.split(/\n+/)) {
+    const p = paragraph.trim();
+    if (!p) continue;
+    // Deterministic fallback equivalent to Pandrator's punctuation/silence path.
+    const pieces = p.match(/[^.!?]+(?:[.!?]+["'”’)]*)|[^.!?]+$/g) || [p];
+    for (const piece of pieces) {
+      const s = normalizeText(piece);
+      if (s) out.push(s);
+    }
+  }
+  return out;
+}
+
+export function splitForTts(text, maxChars = 900) {
+  const sentences = sentenceSegments(text);
+  const chunks = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if (!current) { current = sentence; continue; }
+    if (current.length + 1 + sentence.length <= maxChars) current += ` ${sentence}`;
+    else { chunks.push(current); current = sentence; }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function structuralRole(tag) {
+  const role = tag.getAttribute('role') || '';
+  const epubType = tag.getAttribute('epub:type') || tag.getAttribute('data-epub-type') || '';
+  const text = normalizeText(tag.textContent);
+  const classes = [...tag.classList].map(x => x.toLowerCase());
+  const id = (tag.id || '').toLowerCase();
+  const marker = `${classes.join(' ')} ${id} ${role} ${epubType} ${text.slice(0, 120)}`.toLowerCase();
+  if (/\b(pagebreak|pagenum|page-number|page_num)\b/.test(marker)) return 'deterministic_page_number';
+  if (/\b(footnote|endnote|noteref|footnotes?)\b/.test(marker)) return 'deterministic_footnote';
+  if (/\b(toc|table[- ]of[- ]contents|contents|navigation)\b/.test(marker)) return 'deterministic_toc';
+  return '';
+}
+
+function isBoilerplateHref(href, index, total) {
+  const name = String(href).split('/').pop().replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]/g, ' ');
+  const tokens = new Set(name.split(/\s+/).filter(Boolean));
+  if ([...tokens].some(x => FRONT_NAMES.has(x)) || /cover|title|copyright/.test(name)) return 'deterministic_boilerplate';
+  if ([...tokens].some(x => END_NAMES.has(x)) || /index|biblio|copyright/.test(name)) return 'deterministic_boilerplate';
+  if (index < Math.max(1, Math.floor(total * .08)) && /front|prelim|intro/.test(name)) return 'deterministic_boilerplate';
+  if (index > Math.floor(total * .92) && /back|appendix|about/.test(name)) return 'deterministic_boilerplate';
+  return '';
+}
+
+export function extractHtmlBlocks(html, href = '', spineIndex = 0, spineTotal = 1) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const blocks = [];
+  let sourceIndex = 0;
+  const candidates = [...doc.body.querySelectorAll([...BLOCK_TAGS].join(','))];
+  for (const tag of candidates) {
+    const text = normalizeText(tag.textContent);
+    if (!text) continue;
+    sourceIndex++;
+    const roles = [];
+    const structural = structuralRole(tag);
+    if (structural) roles.push(structural);
+    const bp = isBoilerplateHref(href, spineIndex, spineTotal);
+    if (bp) roles.push(bp);
+    if (/^h[1-6]$/i.test(tag.tagName) || /chapter|prologue|epilogue/i.test(`${tag.className} ${tag.id} ${text.slice(0,80)}`)) roles.push('deterministic_chapter');
+    blocks.push({
+      block_id: `epub:${href}:${sourceIndex}`,
+      text, line_start: sourceIndex, line_end: sourceIndex,
+      source_index: sourceIndex, href, tag: tag.tagName.toLowerCase(),
+      classes: [...tag.classList], element_id: tag.id || null,
+      role_candidates: [...new Set(roles)],
+      raw_markup: tag.outerHTML,
+    });
+  }
+  if (!blocks.length) {
+    const text = normalizeText(doc.body?.textContent || '');
+    if (text) blocks.push({block_id:`epub:${href}:1`,text,line_start:1,line_end:1,source_index:1,href,tag:'body',classes:[],element_id:null,role_candidates:[],raw_markup:html});
+  }
+  return blocks;
+}
+
+export function cleanBlocks(blocks, { removeFootnotes = true, removeBoilerplate = true, removeNavigation = true } = {}) {
+  return blocks.filter(block => {
+    const roles = new Set(block.role_candidates || []);
+    if (removeFootnotes && roles.has('deterministic_footnote')) return false;
+    if (removeBoilerplate && roles.has('deterministic_boilerplate')) return false;
+    if (removeNavigation && roles.has('deterministic_toc')) return false;
+    if (roles.has('deterministic_page_number')) return false;
+    return normalizeText(block.text).length > 0;
+  }).map((block, i) => ({...block, output_index:i+1}));
+}
+
+export function chapterMarkers(blocks) {
+  return blocks.map(block => ({
+    ...block,
+    chapter: (block.role_candidates || []).includes('deterministic_chapter') ? 'yes' : 'no'
+  }));
+}
+
+export function assembleText(blocks) {
+  return blocks.map(b => b.text).join('\n\n');
+}
+
+export function pcmToWavBlob(samples, sampleRate = 24000) {
+  const bytes = 44 + samples.length * 2;
+  const buffer = new ArrayBuffer(bytes);
+  const view = new DataView(buffer);
+  const write = (offset, value) => [...value].forEach((c,i)=>view.setUint8(offset+i,c.charCodeAt(0)));
+  write(0,'RIFF'); view.setUint32(4,36+samples.length*2,true); write(8,'WAVE'); write(12,'fmt ');
+  view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
+  view.setUint32(24,sampleRate,true); view.setUint32(28,sampleRate*2,true); view.setUint16(32,2,true); view.setUint16(34,16,true);
+  write(36,'data'); view.setUint32(40,samples.length*2,true);
+  for(let i=0;i<samples.length;i++) view.setInt16(44+i*2,Math.max(-1,Math.min(1,samples[i]))*32767,true);
+  return new Blob([buffer], {type:'audio/wav'});
+}
