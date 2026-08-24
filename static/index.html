@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pandrator Static</title><link rel="stylesheet" href="./style.css"></head>
+<body>
+<main>
+<h1>Pandrator Static</h1><p>Local document → audiobook. No server.</p>
+<label>Document <input id="source" type="file" accept=".epub,.pdf,.txt,.md,.markdown,.html,.htm,text/plain,application/epub+zip,application/pdf,text/html"></label>
+<label>Voice <input id="voice" value="af_heart"></label>
+<label>Format <select id="format"><option value="wav">WAV</option></select></label>
+<button id="convert" disabled>Convert to audiobook</button><output id="status" aria-live="polite">Choose a document.</output>
+<a id="download" hidden>Download audiobook</a>
+</main><script type="module" src="./app.js"></script>
+</body></html>
